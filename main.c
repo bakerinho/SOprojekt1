@@ -1,34 +1,7 @@
-#include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
-
-int isDir(const char *path) {
-  struct stat statbuf;
-  // 1 - katalog
-  // 0 - poprawna sciezka nieprowadzaca do katalogu
-  // -1 - zla sciezka
-  if (stat(path, &statbuf) != 0) {
-    return -1;
-  }
-
-  return S_ISDIR(statbuf.st_mode) ? 1 : 0;
-}
-
-int validateDir(const char *path, const char *type) {
-  int status = isDir(path);
-
-  if (status == -1) {
-    printf("Nieistniejaca sciezka %s (%s)\n", type, path);
-    return 1;
-  }
-
-  if (status == 0) {
-    printf("Sciezka %s nie jest katalogiem (%s)\n", type, path);
-    return 1;
-  }
-
-  return 0;
-}
 
 int main(int argc, char *argv[]) {
   if (argc < 3) {
@@ -38,14 +11,49 @@ int main(int argc, char *argv[]) {
 
   const char *srcPath = argv[1];
   const char *dstPath = argv[2];
+  struct stat statbuf;
 
-  if (validateDir(srcPath, "Zrodlo") != 0) {
+  if (stat(srcPath, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
+    printf(
+        "Blad: Sciezka zrodlowa '%s' nie istnieje lub nie jest katalogiem.\n",
+        srcPath);
     return 1;
   }
 
-  if (validateDir(dstPath, "Docelowa") != 0) {
+  if (stat(dstPath, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
+    printf(
+        "Blad: Sciezka docelowa '%s' nie istnieje lub nie jest katalogiem.\n",
+        dstPath);
     return 1;
   }
+
+  // Usuniecie nadmiaru plikow z dst
+  DIR *dstDir;
+  struct dirent *pDirent;
+
+  dstDir = opendir(dstPath);
+
+  if (dstDir == NULL) {
+    printf("Nie mozna otworzyc katalogu '%s'", dstPath);
+    return 1;
+  }
+
+  char filePathSrc[1024];
+  strcpy(filePathSrc, srcPath); 
+  strcat(filePathSrc, pDirent->d_name);
+  printf("%s\n", filePathSrc);
+
+  while ((pDirent = readdir(dstDir)) != NULL) {
+    if ((strcmp(pDirent->d_name, ".") == 0) || strcmp(pDirent->d_name, "..") == 0) {
+      continue;
+    }
+    printf("%s\n", pDirent->d_name);
+
+
+
+  }
+
+  closedir(dstDir);
 
   return 0;
 }
