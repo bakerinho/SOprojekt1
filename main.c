@@ -2,8 +2,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_PATH_LENGTH 1024
+
+void print_help(const char *name);
 
 void delete_recursive(const char *path) {
   printf("Aktualna sciezka: %s\n", path);
@@ -13,6 +16,7 @@ void delete_recursive(const char *path) {
   dir = opendir(path);
 
   if (dir == NULL) {
+    printf("Koniec\n");
     return;
   }
 
@@ -24,16 +28,25 @@ void delete_recursive(const char *path) {
       continue;
     }
 
-    snprintf(file_path, sizeof(file_path), "%s", path);
-    if (lstat(file_path, &statbuf) == 0 && S_ISDIR(statbuf.st_mode)) {
-      printf("Znaleziono katalog: %s", entry->d_name);
-      return delete_recursive(file_path);
+    snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
+
+    if (lstat(file_path, &statbuf) == 0) {
+      if (S_ISDIR(statbuf.st_mode)) {
+        delete_recursive(file_path);
+        printf("Usunieto katalog: %s\n", entry->d_name);
+        // rmdir(file_path);
+      } else {
+        printf("Usunieto plik: %s\n", entry->d_name);
+        // unlink(file_path);
+      }
     }
   }
   closedir(dir);
+  // usuniecie folderu z ktorego sie zaczelo
+  // rmdir(file_path);
 }
 
-void synchronize(const char *src_path, const char *dst_path) {
+void synchronize(const char *src_path, const char *dst_path, int recursion) {
 
   // Usuniecie nadmiaru plikow z dst
   DIR *dir;
@@ -42,7 +55,7 @@ void synchronize(const char *src_path, const char *dst_path) {
   dir = opendir(dst_path);
 
   if (dir == NULL) {
-    printf("Nie mozna otworzyc katalogu '%s'", dst_path);
+    printf("Nie mozna otworzyc katalogu '%s'\n", dst_path);
     return;
   }
 
@@ -67,12 +80,15 @@ void synchronize(const char *src_path, const char *dst_path) {
     if (lstat(file_path_dst, &st_dst) == 0 && S_ISREG(st_dst.st_mode)) {
 
       if (lstat(file_path_src, &st_src) != 0) {
-        printf("Nie ma: %s\n", entry->d_name);
-        // TODO usunac ten nadmiar plikow
+        printf("Usunieto: %s\n", entry->d_name);
+        // unlink(file_path_dst);
       }
-      // else {
-      //   printf("Jest: %s\n", pDirent->d_name);
-      // }
+    }
+
+    if (recursion) {
+      if (lstat(file_path_dst, &st_dst) == 0 && S_ISDIR(st_dst.st_mode)) {
+        delete_recursive(file_path_dst);
+      }
     }
   }
 
@@ -80,13 +96,34 @@ void synchronize(const char *src_path, const char *dst_path) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
-    printf("Użycie: %s <katalog_zrodlowy> <katalog_docelowy>\n", argv[0]);
+  const char *src_path = NULL;
+  const char *dst_path = NULL;
+
+  int recursion = 0;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-h") == 0) {
+      print_help(argv[0]);
+      return 0;
+    } else if (strcmp(argv[i], "-R") == 0) {
+      recursion = 1;
+    } else if (src_path == NULL) {
+      src_path = argv[i];
+    } else if (dst_path == NULL) {
+      dst_path = argv[i];
+    } else {
+      printf("Podano zbyt duzo argumentow\n");
+      return 1;
+    }
+  }
+
+  if (src_path == NULL || dst_path == NULL) {
+    printf(
+        "Wymagane sa dwa argumenty: <katalog zrodlowy> <katalog docelowy>\n");
+    print_help(argv[0]);
     return 1;
   }
 
-  const char *src_path = argv[1];
-  const char *dst_path = argv[2];
   struct stat statbuf;
 
   if (lstat(src_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
@@ -103,7 +140,19 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  synchronize(src_path, dst_path);
+  synchronize(src_path, dst_path, recursion);
 
   return 0;
+}
+
+void print_help(const char *name) {
+  printf("Demon synchronizujący dwa podkatalogi\n");
+  printf("------------------------------\n");
+  printf("Uzycie: %s [-R] [-h] <zrodlo> <cel>\n", name);
+  printf("Parametry:\n");
+  printf("  <zrodlo>    Katalog, z ktorego kopiujemy dane\n");
+  printf("  <cel>       Katalog, ktory uaktualniamy i sprzatamy\n");
+  printf("Opcje:\n");
+  printf("  -R          Synchronizacja rekurencyjna (wchodzi w podkatalogi)\n");
+  printf("  -h          Wyswietla pomoc\n");
 }
