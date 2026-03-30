@@ -9,14 +9,12 @@
 void print_help(const char *name);
 
 void delete_recursive(const char *path) {
-  printf("Aktualna sciezka: %s\n", path);
   DIR *dir;
   struct dirent *entry;
 
   dir = opendir(path);
 
   if (dir == NULL) {
-    printf("Koniec\n");
     return;
   }
 
@@ -33,10 +31,8 @@ void delete_recursive(const char *path) {
     if (lstat(file_path, &statbuf) == 0) {
       if (S_ISDIR(statbuf.st_mode)) {
         delete_recursive(file_path);
-        printf("Usunieto katalog: %s\n", entry->d_name);
         // rmdir(file_path);
       } else {
-        printf("Usunieto plik: %s\n", entry->d_name);
         // unlink(file_path);
       }
     }
@@ -69,18 +65,14 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
     if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
       continue;
     }
-    // printf("%s\n", pDirent->d_name);
     snprintf(file_path_src, sizeof(file_path_src), "%s/%s", src_path,
              entry->d_name);
     snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
              entry->d_name);
-    // printf("%s\n", filePathSrc);
-    // printf("%s\n", filePathDst);
 
     if (lstat(file_path_dst, &st_dst) == 0 && S_ISREG(st_dst.st_mode)) {
 
       if (lstat(file_path_src, &st_src) != 0) {
-        printf("Usunieto: %s\n", entry->d_name);
         // unlink(file_path_dst);
       }
     }
@@ -91,8 +83,10 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
       }
     }
   }
-
   closedir(dir);
+  
+  //synchronizacja plikow z src do dsc
+  
 }
 
 int main(int argc, char *argv[]) {
