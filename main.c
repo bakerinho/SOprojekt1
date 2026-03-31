@@ -31,15 +31,14 @@ void delete_recursive(const char *path) {
     if (lstat(file_path, &statbuf) == 0) {
       if (S_ISDIR(statbuf.st_mode)) {
         delete_recursive(file_path);
-        // rmdir(file_path);
       } else {
-        // unlink(file_path);
+        unlink(file_path);
       }
     }
   }
   closedir(dir);
   // usuniecie folderu z ktorego sie zaczelo
-  // rmdir(file_path);
+  rmdir(path);
 }
 
 void synchronize(const char *src_path, const char *dst_path, int recursion) {
@@ -72,21 +71,22 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
 
     if (lstat(file_path_dst, &st_dst) == 0 && S_ISREG(st_dst.st_mode)) {
 
-      if (lstat(file_path_src, &st_src) != 0) {
-        // unlink(file_path_dst);
+      if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
+        unlink(file_path_dst);
       }
     }
 
     if (recursion) {
       if (lstat(file_path_dst, &st_dst) == 0 && S_ISDIR(st_dst.st_mode)) {
-        delete_recursive(file_path_dst);
+        if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
+          delete_recursive(file_path_dst);
+        }
       }
     }
   }
   closedir(dir);
-  
-  //synchronizacja plikow z src do dsc
-  
+
+  // synchronizacja plikow z src do dsc
 }
 
 int main(int argc, char *argv[]) {
