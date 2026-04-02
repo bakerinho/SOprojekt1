@@ -1,5 +1,7 @@
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -87,6 +89,62 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
   closedir(dir);
 
   // synchronizacja plikow z src do dsc
+  dir = opendir(src_path);
+  while ((entry = readdir(dir)) != NULL) {
+    if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+
+    int buffSize = 2048;
+    char *endPtr;
+    char *buff = malloc(buffSize);
+
+    snprintf(file_path_src, sizeof(file_path_src), "%s/%s", src_path,
+             entry->d_name);
+    snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
+             entry->d_name);
+
+    if (!buff) {
+      printf("allocate error\n");
+      return;
+    }
+
+    int fSrc = open(file_path_src, O_RDONLY);
+    if (fSrc == -1) {
+      printf("Blad z otwarciem pliku zrodlowego '%s'", file_path_src);
+      return;
+    }
+
+    int fOut = open(file_path_dst, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fOut == -1) {
+      close(fSrc);
+      printf("Blad z otwarciem pliku docelowego '%s'", file_path_dst);
+      return;
+    }
+
+    int bytes;
+    while ((bytes = read(fSrc, buff, buffSize)) > 0) {
+
+      if (bytes != write(fOut, buff, bytes)) {
+        close(fSrc);
+        close(fOut);
+        free(buff);
+        return;
+      }
+
+      if (bytes == -1) {
+        close(fSrc);
+        close(fOut);
+        free(buff);
+        return;
+      }
+    }
+
+    close(fSrc);
+    close(fOut);
+    free(buff);
+  }
+  closedir(dir);
 }
 
 int main(int argc, char *argv[]) {
