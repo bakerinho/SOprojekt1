@@ -43,7 +43,7 @@ void delete_recursive(const char *path) {
   rmdir(path);
 }
 
-void synchronize(const char *src_path, const char *dst_path, int recursion) {
+void remove_file(const char *src_path, const char *dst_path, int recursion) {
 
   // Usuniecie nadmiaru plikow z dst
   DIR *dir;
@@ -87,8 +87,13 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
     }
   }
   closedir(dir);
+}
 
-  // synchronizacja plikow z src do dsc
+void copy_file(const char *src_path, const char *dst_path, int recursion) {
+
+  DIR *dir;
+  struct dirent *entry;
+
   dir = opendir(src_path);
   while ((entry = readdir(dir)) != NULL) {
     if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
@@ -98,6 +103,17 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
     int buffSize = 2048;
     char *endPtr;
     char *buff = malloc(buffSize);
+
+    if (dir == NULL) {
+      printf("Nie mozna otworzyc katalogu '%s'\n", src_path);
+      return;
+    }
+
+    struct stat st_src;
+    struct stat st_dst;
+
+    char file_path_src[MAX_PATH_LENGTH];
+    char file_path_dst[MAX_PATH_LENGTH];
 
     snprintf(file_path_src, sizeof(file_path_src), "%s/%s", src_path,
              entry->d_name);
@@ -147,6 +163,37 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
   closedir(dir);
 }
 
+void copy_recursive(const char *path) {
+  DIR *dir;
+  struct dirent *entry;
+
+  dir = opendir(path);
+
+  if (dir == NULL) {
+    return;
+  }
+
+  struct stat statbuf;
+  char file_path[MAX_PATH_LENGTH];
+
+  while ((entry = readdir(dir)) != NULL) {
+    if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+
+    snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
+
+    if (lstat(file_path, &statbuf) == 0) {
+      if (S_ISDIR(statbuf.st_mode)) {
+        copy_recursive(file_path);
+      } else {
+        copy_file(file_path, );
+      }
+    }
+  }
+  closedir(dir);
+}
+
 int main(int argc, char *argv[]) {
   const char *src_path = NULL;
   const char *dst_path = NULL;
@@ -192,7 +239,13 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  synchronize(src_path, dst_path, recursion);
+  // 1. usuniecie nadmiaru z dst
+  // jesli byl argument -R uwzglednia rowniez katalogi
+  remove_file(src_path, dst_path, recursion);
+
+  // 2. synchronizacja z src do dst 
+  // jesli byl argument -R uwzglednia rowniez katalogi
+  copy_file(src_path, dst_path, recursion);
 
   return 0;
 }
