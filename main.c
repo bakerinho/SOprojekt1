@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #define MAX_PATH_LENGTH 1024
+#define BUFF_SIZE_OPEN 4096
 
 void print_help(const char *name);
 
@@ -71,15 +72,12 @@ void remove_file(const char *src_path, const char *dst_path, int recursion) {
     snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
              entry->d_name);
 
-    if (lstat(file_path_dst, &st_dst) == 0 && S_ISREG(st_dst.st_mode)) {
-
-      if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
-        unlink(file_path_dst);
-      }
-    }
-
-    if (recursion) {
-      if (lstat(file_path_dst, &st_dst) == 0 && S_ISDIR(st_dst.st_mode)) {
+    if (lstat(file_path_dst, &st_dst) == 0) {
+      if (S_ISREG(st_dst.st_mode)) {
+        if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
+          unlink(file_path_dst);
+        }
+      } else if (recursion && S_ISDIR(st_dst.st_mode)) {
         if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
           delete_recursive(file_path_dst);
         }
@@ -89,108 +87,95 @@ void remove_file(const char *src_path, const char *dst_path, int recursion) {
   closedir(dir);
 }
 
-void copy_file(const char *src_path, const char *dst_path, int recursion) {
+void copy_file(const char *src_path, const char *dst_path) {
+
+  int buffSize = BUFF_SIZE_OPEN; // 4096 B
+  char *endPtr;
+  char *buff = malloc(buffSize);
+
+  if (!buff) {
+    printf("allocate error\n");
+    return;
+  }
+
+  int fSrc = open(src_path, O_RDONLY);
+  if (fSrc == -1) {
+    printf("Blad z otwarciem pliku zrodlowego '%s'", src_path);
+    return;
+  }
+
+  int fOut = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  if (fOut == -1) {
+    close(fSrc);
+    printf("Blad z otwarciem pliku docelowego '%s'", dst_path);
+    return;
+  }
+
+  int bytes;
+  while ((bytes = read(fSrc, buff, buffSize)) > 0) {
+
+    if (bytes != write(fOut, buff, bytes)) {
+      close(fSrc);
+      close(fOut);
+      free(buff);
+      return;
+    }
+
+    if (bytes == -1) {
+      close(fSrc);
+      close(fOut);
+      free(buff);
+      return;
+    }
+  }
+
+  close(fSrc);
+  close(fOut);
+  free(buff);
+}
+
+void synchronize(const char *src_path, const char *dst_path, int recursion) {
 
   DIR *dir;
   struct dirent *entry;
 
   dir = opendir(src_path);
+
+  if (dir == NULL) {
+    printf("Nie mozna otworzyc katalogu '%s'\n", src_path);
+    return;
+  }
+
+  struct stat st_src;
+  struct stat st_dst;
+
+  char file_path_src[MAX_PATH_LENGTH];
+  char file_path_dst[MAX_PATH_LENGTH];
+
   while ((entry = readdir(dir)) != NULL) {
     if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
       continue;
     }
-
-    int buffSize = 2048;
-    char *endPtr;
-    char *buff = malloc(buffSize);
-
-    if (dir == NULL) {
-      printf("Nie mozna otworzyc katalogu '%s'\n", src_path);
-      return;
-    }
-
-    struct stat st_src;
-    struct stat st_dst;
-
-    char file_path_src[MAX_PATH_LENGTH];
-    char file_path_dst[MAX_PATH_LENGTH];
 
     snprintf(file_path_src, sizeof(file_path_src), "%s/%s", src_path,
              entry->d_name);
     snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
              entry->d_name);
 
-    if (!buff) {
-      printf("allocate error\n");
-      return;
-    }
-
-    int fSrc = open(file_path_src, O_RDONLY);
-    if (fSrc == -1) {
-      printf("Blad z otwarciem pliku zrodlowego '%s'", file_path_src);
-      return;
-    }
-
-    int fOut = open(file_path_dst, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (fOut == -1) {
-      close(fSrc);
-      printf("Blad z otwarciem pliku docelowego '%s'", file_path_dst);
-      return;
-    }
-
-    int bytes;
-    while ((bytes = read(fSrc, buff, buffSize)) > 0) {
-
-      if (bytes != write(fOut, buff, bytes)) {
-        close(fSrc);
-        close(fOut);
-        free(buff);
-        return;
-      }
-
-      if (bytes == -1) {
-        close(fSrc);
-        close(fOut);
-        free(buff);
-        return;
-      }
-    }
-
-    close(fSrc);
-    close(fOut);
-    free(buff);
-  }
-  closedir(dir);
-}
-
-void copy_recursive(const char *path) {
-  DIR *dir;
-  struct dirent *entry;
-
-  dir = opendir(path);
-
-  if (dir == NULL) {
-    return;
-  }
-
-  struct stat statbuf;
-  char file_path[MAX_PATH_LENGTH];
-
-  while ((entry = readdir(dir)) != NULL) {
-    if ((strcmp(entry->d_name, ".") == 0) || strcmp(entry->d_name, "..") == 0) {
-      continue;
-    }
-
-    snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
-
-    if (lstat(file_path, &statbuf) == 0) {
-      if (S_ISDIR(statbuf.st_mode)) {
-        copy_recursive(file_path);
-      } else {
-        copy_file(file_path, );
+    if (lstat(file_path_src, &st_src) == 0) {
+      if (S_ISREG(st_src.st_mode)) {
+        if (lstat(file_path_dst, &st_dst) != 0 || !S_ISREG(st_dst.st_mode)) {
+          copy_file(file_path_src, file_path_dst);
+        }
+      } else if (recursion && S_ISDIR(st_src.st_mode)) {
+        if (lstat(file_path_dst, &st_dst) != 0 || !S_ISDIR(st_dst.st_mode)) {
+          mkdir(file_path_dst, st_src.st_mode & 0777);
+        }
+        synchronize(file_path_src, file_path_dst, 1);
       }
     }
   }
+
   closedir(dir);
 }
 
@@ -243,9 +228,10 @@ int main(int argc, char *argv[]) {
   // jesli byl argument -R uwzglednia rowniez katalogi
   remove_file(src_path, dst_path, recursion);
 
-  // 2. synchronizacja z src do dst 
+  // 2. synchronizacja z src do dst
   // jesli byl argument -R uwzglednia rowniez katalogi
-  copy_file(src_path, dst_path, recursion);
+  // copy_file(src_path, dst_path, recursion);
+  synchronize(src_path, dst_path, recursion);
 
   return 0;
 }
