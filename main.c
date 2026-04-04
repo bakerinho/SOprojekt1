@@ -1,13 +1,16 @@
 #include <dirent.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #define MAX_PATH_LENGTH 1024
-#define BUFF_SIZE_OPEN 4096
+#define BUFF_SIZE_OPEN 8192                 // 8KB bo tak
+#define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo na jakims tescie widzialem
 
 void print_help(const char *name);
 
@@ -87,55 +90,104 @@ void remove_file(const char *src_path, const char *dst_path, int recursion) {
   closedir(dir);
 }
 
-void copy_file(const char *src_path, const char *dst_path) {
-
-  int buffSize = BUFF_SIZE_OPEN; // 4096 B
-  char *endPtr;
-  char *buff = malloc(buffSize);
-
-  if (!buff) {
-    printf("allocate error\n");
-    return;
-  }
+void copy_file(const char *src_path, const char *dst_path,
+               long long threshold) {
 
   int fSrc = open(src_path, O_RDONLY);
   if (fSrc == -1) {
-    printf("Blad z otwarciem pliku zrodlowego '%s'", src_path);
+    printf("Blad z otwarciem pliku zrodlowego '%s'\n", src_path);
     return;
   }
 
-  int fOut = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-  if (fOut == -1) {
+  struct stat statbuf;
+  if (fstat(fSrc, &statbuf) == -1) {
     close(fSrc);
-    printf("Blad z otwarciem pliku docelowego '%s'", dst_path);
     return;
   }
 
-  int bytes;
-  while ((bytes = read(fSrc, buff, buffSize)) > 0) {
+  int fDst = open(dst_path, O_RDWR | O_CREAT | O_TRUNC, statbuf.st_mode);
+  if (fDst == -1) {
+    close(fSrc);
+    printf("Blad z otwarciem pliku docelowego '%s'\n", dst_path);
+    return;
+  }
 
-    if (bytes != write(fOut, buff, bytes)) {
+  if (statbuf.st_size >= 0 && statbuf.st_size <= threshold) {
+
+    size_t buffSize = BUFF_SIZE_OPEN; // 8KB
+    char *buff = malloc(buffSize);
+
+    if (!buff) {
+      printf("Blad z alokacja pamieci\n");
       close(fSrc);
-      close(fOut);
-      free(buff);
+      close(fDst);
       return;
     }
 
+    ssize_t bytes;
+    while ((bytes = read(fSrc, buff, buffSize)) > 0) {
+
+      if (bytes != write(fDst, buff, (size_t)bytes)) {
+        close(fSrc);
+        close(fDst);
+        free(buff);
+        return;
+      }
+    }
     if (bytes == -1) {
       close(fSrc);
-      close(fOut);
+      close(fDst);
       free(buff);
       return;
     }
-  }
 
+    free(buff);
+    printf("Uzyto open/write\n");
+  } else {
+
+    void *src_mapp, *dst_mapp;
+
+    src_mapp =
+        mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
+
+    if (src_mapp == MAP_FAILED) {
+      printf("Nie udalo sie zmapowac zrodla\n");
+      close(fSrc);
+      close(fDst);
+      return;
+    }
+
+    if (ftruncate(fDst, statbuf.st_size) == -1) {
+      printf("Nie udalo sie poszerzyc pliku celu do zmapowania\n");
+      close(fSrc);
+      close(fDst);
+      munmap(src_mapp, (size_t)statbuf.st_size);
+      return;
+    }
+
+    dst_mapp = mmap(NULL, (size_t)statbuf.st_size, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, fDst, 0);
+
+    if (dst_mapp == MAP_FAILED) {
+      printf("Nie udalo sie zmapowac celu\n");
+      munmap(src_mapp, (size_t)statbuf.st_size);
+      close(fSrc);
+      close(fDst);
+      return;
+    }
+
+    memcpy(dst_mapp, src_mapp, (size_t)statbuf.st_size);
+
+    munmap(src_mapp, (size_t)statbuf.st_size);
+    munmap(dst_mapp, (size_t)statbuf.st_size);
+    printf("Uzyto mmap\n");
+  }
   close(fSrc);
-  close(fOut);
-  free(buff);
+  close(fDst);
 }
 
-void synchronize(const char *src_path, const char *dst_path, int recursion) {
-
+void synchronize(const char *src_path, const char *dst_path, int recursion,
+                 long long threshold) {
   DIR *dir;
   struct dirent *entry;
 
@@ -165,13 +217,13 @@ void synchronize(const char *src_path, const char *dst_path, int recursion) {
     if (lstat(file_path_src, &st_src) == 0) {
       if (S_ISREG(st_src.st_mode)) {
         if (lstat(file_path_dst, &st_dst) != 0 || !S_ISREG(st_dst.st_mode)) {
-          copy_file(file_path_src, file_path_dst);
+          copy_file(file_path_src, file_path_dst, threshold);
         }
       } else if (recursion && S_ISDIR(st_src.st_mode)) {
         if (lstat(file_path_dst, &st_dst) != 0 || !S_ISDIR(st_dst.st_mode)) {
           mkdir(file_path_dst, st_src.st_mode & 0777);
         }
-        synchronize(file_path_src, file_path_dst, 1);
+        synchronize(file_path_src, file_path_dst, 1, threshold);
       }
     }
   }
@@ -184,6 +236,7 @@ int main(int argc, char *argv[]) {
   const char *dst_path = NULL;
 
   int recursion = 0;
+  long long mmap_threshold = DEFAULT_SIZE_MMAP;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0) {
@@ -191,6 +244,14 @@ int main(int argc, char *argv[]) {
       return 0;
     } else if (strcmp(argv[i], "-R") == 0) {
       recursion = 1;
+    } else if (strcmp(argv[i], "-t") == 0) {
+      if (i + 1 < argc) {
+        mmap_threshold = atoll(argv[++i]);
+      }
+      if (mmap_threshold == 0 || mmap_threshold < 0) {
+        printf("Wartosc dla -t jest nieprawidlowa lub <= 0\n");
+        return 1;
+      }
     } else if (src_path == NULL) {
       src_path = argv[i];
     } else if (dst_path == NULL) {
@@ -200,7 +261,6 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-
   if (src_path == NULL || dst_path == NULL) {
     printf(
         "Wymagane sa dwa argumenty: <katalog zrodlowy> <katalog docelowy>\n");
@@ -230,8 +290,7 @@ int main(int argc, char *argv[]) {
 
   // 2. synchronizacja z src do dst
   // jesli byl argument -R uwzglednia rowniez katalogi
-  // copy_file(src_path, dst_path, recursion);
-  synchronize(src_path, dst_path, recursion);
+  synchronize(src_path, dst_path, recursion, mmap_threshold);
 
   return 0;
 }
@@ -245,5 +304,9 @@ void print_help(const char *name) {
   printf("  <cel>       Katalog, ktory uaktualniamy i sprzatamy\n");
   printf("Opcje:\n");
   printf("  -R          Synchronizacja rekurencyjna (wchodzi w podkatalogi)\n");
+  printf(
+      "  -t <bajty>  Prog wielkosci pliku w bajtach, powyzej ktorego demon\n");
+  printf("              uzyje mmap zamiast read/write.\n");
+  printf("              (Domyslna wartosc: 8388608 B = 8 MB)\n");
   printf("  -h          Wyswietla pomoc\n");
 }
