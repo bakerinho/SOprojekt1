@@ -12,16 +12,18 @@
 #define BUFF_SIZE_OPEN 8192                 // 8KB bo tak
 #define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo na jakims tescie widzialem
 
+// TODO: zrobic fork()
+
 void print_help(const char *name);
 
-void delete_recursive(const char *path) {
+int delete_recursive(const char *path) {
   DIR *dir;
   struct dirent *entry;
 
   dir = opendir(path);
 
   if (dir == NULL) {
-    return;
+    return -1;
   }
 
   struct stat statbuf;
@@ -34,20 +36,23 @@ void delete_recursive(const char *path) {
 
     snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
 
-    if (lstat(file_path, &statbuf) == 0) {
-      if (S_ISDIR(statbuf.st_mode)) {
-        delete_recursive(file_path);
-      } else {
-        unlink(file_path);
-      }
+    if (lstat(file_path, &statbuf) != 0) {
+      printf("Nie znaleziono pliku docelowego '%s'", file_path);
+      continue;
+    }
+    if (S_ISDIR(statbuf.st_mode)) {
+      delete_recursive(file_path);
+    } else {
+      unlink(file_path);
     }
   }
   closedir(dir);
   // usuniecie folderu z ktorego sie zaczelo
   rmdir(path);
+  return 0;
 }
 
-void remove_file(const char *src_path, const char *dst_path, int recursion) {
+int remove_file(const char *src_path, const char *dst_path, int recursion) {
 
   // Usuniecie nadmiaru plikow z dst
   DIR *dir;
@@ -57,7 +62,7 @@ void remove_file(const char *src_path, const char *dst_path, int recursion) {
 
   if (dir == NULL) {
     printf("Nie mozna otworzyc katalogu '%s'\n", dst_path);
-    return;
+    return -1;
   }
 
   struct stat st_src;
@@ -75,41 +80,47 @@ void remove_file(const char *src_path, const char *dst_path, int recursion) {
     snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
              entry->d_name);
 
-    if (lstat(file_path_dst, &st_dst) == 0) {
-      if (S_ISREG(st_dst.st_mode)) {
-        if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
-          unlink(file_path_dst);
-        }
-      } else if (recursion && S_ISDIR(st_dst.st_mode)) {
-        if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
-          delete_recursive(file_path_dst);
+    if (lstat(file_path_dst, &st_dst) != 0) {
+      printf("Nie znaleziono pliku docelowego '%s'", file_path_dst);
+      continue;
+    }
+    if (S_ISREG(st_dst.st_mode)) {
+      if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
+        unlink(file_path_dst);
+      }
+    } else if (recursion && S_ISDIR(st_dst.st_mode)) {
+      if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
+        if (delete_recursive(file_path_dst) == -1) {
+          printf("Nie udalo sie usunac pliku rekurencyjnie z '%s'\n",
+                 file_path_dst);
+          continue;
         }
       }
     }
   }
   closedir(dir);
+  return 0;
 }
 
-void copy_file(const char *src_path, const char *dst_path,
-               long long threshold) {
+int copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
   int fSrc = open(src_path, O_RDONLY);
   if (fSrc == -1) {
     printf("Blad z otwarciem pliku zrodlowego '%s'\n", src_path);
-    return;
+    return -1;
   }
 
   struct stat statbuf;
   if (fstat(fSrc, &statbuf) == -1) {
     close(fSrc);
-    return;
+    return -1;
   }
 
   int fDst = open(dst_path, O_RDWR | O_CREAT | O_TRUNC, statbuf.st_mode);
   if (fDst == -1) {
     close(fSrc);
     printf("Blad z otwarciem pliku docelowego '%s'\n", dst_path);
-    return;
+    return -1;
   }
 
   if (statbuf.st_size >= 0 && statbuf.st_size <= threshold) {
@@ -121,7 +132,7 @@ void copy_file(const char *src_path, const char *dst_path,
       printf("Blad z alokacja pamieci\n");
       close(fSrc);
       close(fDst);
-      return;
+      return -1;
     }
 
     ssize_t bytes;
@@ -131,22 +142,20 @@ void copy_file(const char *src_path, const char *dst_path,
         close(fSrc);
         close(fDst);
         free(buff);
-        return;
+        return -1;
       }
     }
     if (bytes == -1) {
       close(fSrc);
       close(fDst);
       free(buff);
-      return;
+      return -1;
     }
 
     free(buff);
     printf("Uzyto open/write\n");
   } else {
-
     void *src_mapp, *dst_mapp;
-
     src_mapp =
         mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
 
@@ -154,7 +163,7 @@ void copy_file(const char *src_path, const char *dst_path,
       printf("Nie udalo sie zmapowac zrodla\n");
       close(fSrc);
       close(fDst);
-      return;
+      return -1;
     }
 
     if (ftruncate(fDst, statbuf.st_size) == -1) {
@@ -162,7 +171,7 @@ void copy_file(const char *src_path, const char *dst_path,
       close(fSrc);
       close(fDst);
       munmap(src_mapp, (size_t)statbuf.st_size);
-      return;
+      return -1;
     }
 
     dst_mapp = mmap(NULL, (size_t)statbuf.st_size, PROT_READ | PROT_WRITE,
@@ -173,7 +182,7 @@ void copy_file(const char *src_path, const char *dst_path,
       munmap(src_mapp, (size_t)statbuf.st_size);
       close(fSrc);
       close(fDst);
-      return;
+      return -1;
     }
 
     memcpy(dst_mapp, src_mapp, (size_t)statbuf.st_size);
@@ -182,12 +191,23 @@ void copy_file(const char *src_path, const char *dst_path,
     munmap(dst_mapp, (size_t)statbuf.st_size);
     printf("Uzyto mmap\n");
   }
+
   close(fSrc);
   close(fDst);
+  // zmiana czasu modyfikacji
+  struct timespec times[2];
+  times[0] = statbuf.st_atim; // Czas dostepu
+  times[1] = statbuf.st_mtim; // Czas modyfikacji
+
+  if (utimensat(AT_FDCWD, dst_path, times, 0) == -1) {
+    printf("Nie udalo sie nadpisac czasu dla '%s'\n", dst_path);
+    return -1;
+  }
+  return 0;
 }
 
-void synchronize(const char *src_path, const char *dst_path, int recursion,
-                 long long threshold) {
+int synchronize(const char *src_path, const char *dst_path, int recursion,
+                long long threshold) {
   DIR *dir;
   struct dirent *entry;
 
@@ -195,7 +215,7 @@ void synchronize(const char *src_path, const char *dst_path, int recursion,
 
   if (dir == NULL) {
     printf("Nie mozna otworzyc katalogu '%s'\n", src_path);
-    return;
+    return -1;
   }
 
   struct stat st_src;
@@ -214,21 +234,33 @@ void synchronize(const char *src_path, const char *dst_path, int recursion,
     snprintf(file_path_dst, sizeof(file_path_dst), "%s/%s", dst_path,
              entry->d_name);
 
-    if (lstat(file_path_src, &st_src) == 0) {
-      if (S_ISREG(st_src.st_mode)) {
-        if (lstat(file_path_dst, &st_dst) != 0 || !S_ISREG(st_dst.st_mode)) {
-          copy_file(file_path_src, file_path_dst, threshold);
+    if (lstat(file_path_src, &st_src) != 0) {
+      continue;
+    }
+
+    if (S_ISREG(st_src.st_mode)) {
+      if (lstat(file_path_dst, &st_dst) != 0 || !S_ISREG(st_dst.st_mode) ||
+          st_src.st_mtim.tv_sec != st_dst.st_mtim.tv_sec ||
+          st_src.st_mtim.tv_nsec != st_dst.st_mtim.tv_nsec) {
+        if (copy_file(file_path_src, file_path_dst, threshold) == -1) {
+          printf("Nie udalo sie skopiowac pliku z '%s' do '%s'\n",
+                 file_path_src, file_path_dst);
+          continue;
         }
-      } else if (recursion && S_ISDIR(st_src.st_mode)) {
-        if (lstat(file_path_dst, &st_dst) != 0 || !S_ISDIR(st_dst.st_mode)) {
-          mkdir(file_path_dst, st_src.st_mode & 0777);
-        }
-        synchronize(file_path_src, file_path_dst, 1, threshold);
+      }
+    } else if (recursion && S_ISDIR(st_src.st_mode)) {
+      if (lstat(file_path_dst, &st_dst) != 0 || !S_ISDIR(st_dst.st_mode)) {
+        mkdir(file_path_dst, st_src.st_mode & 0777);
+      }
+      if (synchronize(file_path_src, file_path_dst, recursion, threshold) ==
+          -1) {
+        printf("Nie udalo sie skopiowac pliku rekurencyjnie\n");
+        continue;
       }
     }
   }
-
   closedir(dir);
+  return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -261,6 +293,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
+
   if (src_path == NULL || dst_path == NULL) {
     printf(
         "Wymagane sa dwa argumenty: <katalog zrodlowy> <katalog docelowy>\n");
@@ -286,11 +319,21 @@ int main(int argc, char *argv[]) {
 
   // 1. usuniecie nadmiaru z dst
   // jesli byl argument -R uwzglednia rowniez katalogi
-  remove_file(src_path, dst_path, recursion);
+  if (remove_file(src_path, dst_path, recursion) == -1) {
+    printf("Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'\n",
+           src_path);
+    return 1;
+  }
 
   // 2. synchronizacja z src do dst
   // jesli byl argument -R uwzglednia rowniez katalogi
-  synchronize(src_path, dst_path, recursion, mmap_threshold);
+  if (synchronize(src_path, dst_path, recursion, mmap_threshold) == -1) {
+    printf("Nie udalo sie zsynchronizowac wszystkich plikow z katalogu "
+           "zrodlowego '%s' do "
+           "katalogu docelowego '%s'\n",
+           src_path, dst_path);
+    return 1;
+  }
 
   return 0;
 }
@@ -298,14 +341,14 @@ int main(int argc, char *argv[]) {
 void print_help(const char *name) {
   printf("Demon synchronizujący dwa podkatalogi\n");
   printf("------------------------------\n");
-  printf("Uzycie: %s [-R] [-h] <zrodlo> <cel>\n", name);
+  printf("Uzycie: %s [-h] [-R] [-t] <zrodlo> <cel>\n", name);
   printf("Parametry:\n");
   printf("  <zrodlo>    Katalog, z ktorego kopiujemy dane\n");
   printf("  <cel>       Katalog, ktory uaktualniamy i sprzatamy\n");
   printf("Opcje:\n");
   printf("  -R          Synchronizacja rekurencyjna (wchodzi w podkatalogi)\n");
-  printf(
-      "  -t <bajty>  Prog wielkosci pliku w bajtach, powyzej ktorego demon\n");
+  printf("  -t <bajty>  Prog wielkosci pliku w bajtach, powyzej ktorego "
+         "demon\n");
   printf("              uzyje mmap zamiast read/write.\n");
   printf("              (Domyslna wartosc: 8388608 B = 8 MB)\n");
   printf("  -h          Wyswietla pomoc\n");
