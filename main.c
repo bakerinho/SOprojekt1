@@ -47,14 +47,13 @@ int delete_recursive(const char *path) {
     }
   }
   closedir(dir);
-  // usuniecie folderu z ktorego sie zaczelo
+  // usuniecie folderu w ktorym usunieto wszystkie pliki
   rmdir(path);
   return 0;
 }
 
 int remove_file(const char *src_path, const char *dst_path, int recursion) {
 
-  // Usuniecie nadmiaru plikow z dst
   DIR *dir;
   struct dirent *entry;
 
@@ -155,11 +154,11 @@ int copy_file(const char *src_path, const char *dst_path, long long threshold) {
     free(buff);
     printf("Uzyto open/write\n");
   } else {
-    void *src_mapp, *dst_mapp;
-    src_mapp =
+    void *src_mmap, *dst_mmap;
+    src_mmap =
         mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
 
-    if (src_mapp == MAP_FAILED) {
+    if (src_mmap == MAP_FAILED) {
       printf("Nie udalo sie zmapowac zrodla\n");
       close(fSrc);
       close(fDst);
@@ -170,25 +169,25 @@ int copy_file(const char *src_path, const char *dst_path, long long threshold) {
       printf("Nie udalo sie poszerzyc pliku celu do zmapowania\n");
       close(fSrc);
       close(fDst);
-      munmap(src_mapp, (size_t)statbuf.st_size);
+      munmap(src_mmap, (size_t)statbuf.st_size);
       return -1;
     }
 
-    dst_mapp = mmap(NULL, (size_t)statbuf.st_size, PROT_READ | PROT_WRITE,
+    dst_mmap = mmap(NULL, (size_t)statbuf.st_size, PROT_READ | PROT_WRITE,
                     MAP_SHARED, fDst, 0);
 
-    if (dst_mapp == MAP_FAILED) {
+    if (dst_mmap == MAP_FAILED) {
       printf("Nie udalo sie zmapowac celu\n");
-      munmap(src_mapp, (size_t)statbuf.st_size);
+      munmap(src_mmap, (size_t)statbuf.st_size);
       close(fSrc);
       close(fDst);
       return -1;
     }
 
-    memcpy(dst_mapp, src_mapp, (size_t)statbuf.st_size);
+    memcpy(dst_mmap, src_mmap, (size_t)statbuf.st_size);
 
-    munmap(src_mapp, (size_t)statbuf.st_size);
-    munmap(dst_mapp, (size_t)statbuf.st_size);
+    munmap(src_mmap, (size_t)statbuf.st_size);
+    munmap(dst_mmap, (size_t)statbuf.st_size);
     printf("Uzyto mmap\n");
   }
 
