@@ -42,7 +42,7 @@ delete_recursive(const char *path) {
     snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
 
     if (lstat(file_path, &statbuf) != 0) {
-      printf("Nie znaleziono pliku docelowego '%s'", file_path);
+      syslog(LOG_ERR, "Nie znaleziono pliku docelowego '%s'", file_path);
       continue;
     }
     if (S_ISDIR(statbuf.st_mode)) {
@@ -66,7 +66,7 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
   dir = opendir(dst_path);
 
   if (dir == NULL) {
-    printf("Nie mozna otworzyc katalogu '%s'\n", dst_path);
+    syslog(LOG_ERR, "Nie mozna otworzyc katalogu '%s'", dst_path);
     return -1;
   }
 
@@ -86,7 +86,7 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
              entry->d_name);
 
     if (lstat(file_path_dst, &st_dst) != 0) {
-      printf("Nie znaleziono pliku docelowego '%s'", file_path_dst);
+      syslog(LOG_ERR, "Nie znaleziono pliku docelowego '%s'", file_path_dst);
       continue;
     }
     if (S_ISREG(st_dst.st_mode)) {
@@ -96,7 +96,7 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
     } else if (recursion && S_ISDIR(st_dst.st_mode)) {
       if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
         if (delete_recursive(file_path_dst) == -1) {
-          printf("Nie udalo sie usunac pliku rekurencyjnie z '%s'\n",
+          syslog(LOG_ERR, "Nie udalo sie usunac pliku rekurencyjnie z '%s'",
                  file_path_dst);
           continue;
         }
@@ -112,7 +112,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
   int fSrc = open(src_path, O_RDONLY);
   if (fSrc == -1) {
-    printf("Blad z otwarciem pliku zrodlowego '%s'\n", src_path);
+    syslog(LOG_ERR, "Blad z otwarciem pliku zrodlowego '%s'", src_path);
     return -1;
   }
 
@@ -125,7 +125,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
   int fDst = open(dst_path, O_RDWR | O_CREAT | O_TRUNC, statbuf.st_mode);
   if (fDst == -1) {
     close(fSrc);
-    printf("Blad z otwarciem pliku docelowego '%s'\n", dst_path);
+    syslog(LOG_ERR, "Blad z otwarciem pliku docelowego '%s'", dst_path);
     return -1;
   }
 
@@ -135,7 +135,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     char *buff = malloc(buffSize);
 
     if (!buff) {
-      printf("Blad z alokacja pamieci\n");
+      syslog(LOG_ERR, "Blad z alokacja pamieci");
       close(fSrc);
       close(fDst);
       return -1;
@@ -159,21 +159,21 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     }
 
     free(buff);
-    printf("Uzyto open/write\n");
+    // printf("Uzyto open/write\n");
   } else {
     void *src_mmap, *dst_mmap;
     src_mmap =
         mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
 
     if (src_mmap == MAP_FAILED) {
-      printf("Nie udalo sie zmapowac zrodla\n");
+      syslog(LOG_ERR, "Nie udalo sie zmapowac zrodla");
       close(fSrc);
       close(fDst);
       return -1;
     }
 
     if (ftruncate(fDst, statbuf.st_size) == -1) {
-      printf("Nie udalo sie poszerzyc pliku celu do zmapowania\n");
+      syslog(LOG_ERR, "Nie udalo sie poszerzyc pliku celu do zmapowania");
       close(fSrc);
       close(fDst);
       munmap(src_mmap, (size_t)statbuf.st_size);
@@ -184,7 +184,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
                     MAP_SHARED, fDst, 0);
 
     if (dst_mmap == MAP_FAILED) {
-      printf("Nie udalo sie zmapowac celu\n");
+      syslog(LOG_ERR, "Nie udalo sie zmapowac celu");
       munmap(src_mmap, (size_t)statbuf.st_size);
       close(fSrc);
       close(fDst);
@@ -195,7 +195,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
     munmap(src_mmap, (size_t)statbuf.st_size);
     munmap(dst_mmap, (size_t)statbuf.st_size);
-    printf("Uzyto mmap\n");
+    // printf("Uzyto mmap\n");
   }
 
   close(fSrc);
@@ -206,7 +206,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
   times[1] = statbuf.st_mtim; // Czas modyfikacji
 
   if (utimensat(AT_FDCWD, dst_path, times, 0) == -1) {
-    printf("Nie udalo sie nadpisac czasu dla '%s'\n", dst_path);
+    syslog(LOG_ERR, "Nie udalo sie nadpisac czasu dla '%s'", dst_path);
     return -1;
   }
   return 0;
@@ -221,7 +221,7 @@ synchronize(const char *src_path, const char *dst_path, int recursion,
   dir = opendir(src_path);
 
   if (dir == NULL) {
-    printf("Nie mozna otworzyc katalogu '%s'\n", src_path);
+    syslog(LOG_ERR, "Nie mozna otworzyc katalogu '%s'", src_path);
     return -1;
   }
 
@@ -250,7 +250,7 @@ synchronize(const char *src_path, const char *dst_path, int recursion,
           st_src.st_mtim.tv_sec != st_dst.st_mtim.tv_sec ||
           st_src.st_mtim.tv_nsec != st_dst.st_mtim.tv_nsec) {
         if (copy_file(file_path_src, file_path_dst, threshold) == -1) {
-          printf("Nie udalo sie skopiowac pliku z '%s' do '%s'\n",
+          syslog(LOG_ERR, "Nie udalo sie skopiowac pliku z '%s' do '%s'",
                  file_path_src, file_path_dst);
           continue;
         }
@@ -261,7 +261,7 @@ synchronize(const char *src_path, const char *dst_path, int recursion,
       }
       if (synchronize(file_path_src, file_path_dst, recursion, threshold) ==
           -1) {
-        printf("Nie udalo sie skopiowac pliku rekurencyjnie\n");
+        syslog(LOG_ERR, "Nie udalo sie skopiowac pliku rekurencyjnie");
         continue;
       }
     }
@@ -426,9 +426,8 @@ int main(int argc, char *argv[]) {
     if (remove_file(src_path, dst_path, recursion) == -1) {
       syslog(
           LOG_ERR,
-          "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'\n",
+          "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'",
           src_path);
-      return 1;
     }
 
     // 2. synchronizacja z src do dst
@@ -436,9 +435,8 @@ int main(int argc, char *argv[]) {
     if (synchronize(src_path, dst_path, recursion, mmap_threshold) == -1) {
       syslog(LOG_ERR,
              "Nie udalo sie zsynchronizowac wszystkich plikow z katalogu "
-             "zrodlowego '%s' do katalogu docelowego '%s'\n",
+             "zrodlowego '%s' do katalogu docelowego '%s'",
              src_path, dst_path);
-      return 1;
     }
 
     syslog(LOG_INFO, "ZAKONCZENIE SYNCHRONIZACJI");
