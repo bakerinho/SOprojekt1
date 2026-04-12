@@ -1,22 +1,27 @@
 #include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syslog.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #define MAX_PATH_LENGTH 1024
 #define BUFF_SIZE_OPEN 8192                 // 8KB bo tak
 #define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo na jakims tescie widzialem
 
-// TODO: zrobic fork()
+#define SLEEP_INTERVAL (5 * 60) // 5 min
+#define SLEEP_INTERVAL_TEST 5   // 5 sek
 
 void print_help(const char *name);
 
-int delete_recursive(const char *path) {
+int // returns 0 on success, -1 on error
+delete_recursive(const char *path) {
   DIR *dir;
   struct dirent *entry;
 
@@ -52,7 +57,8 @@ int delete_recursive(const char *path) {
   return 0;
 }
 
-int remove_file(const char *src_path, const char *dst_path, int recursion) {
+int // returns 0 on success, -1 on error
+remove_file(const char *src_path, const char *dst_path, int recursion) {
 
   DIR *dir;
   struct dirent *entry;
@@ -101,7 +107,8 @@ int remove_file(const char *src_path, const char *dst_path, int recursion) {
   return 0;
 }
 
-int copy_file(const char *src_path, const char *dst_path, long long threshold) {
+int // returns 0 on success, -1 on error
+copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
   int fSrc = open(src_path, O_RDONLY);
   if (fSrc == -1) {
@@ -205,8 +212,9 @@ int copy_file(const char *src_path, const char *dst_path, long long threshold) {
   return 0;
 }
 
-int synchronize(const char *src_path, const char *dst_path, int recursion,
-                long long threshold) {
+int // returns 0 on success, -1 on error
+synchronize(const char *src_path, const char *dst_path, int recursion,
+            long long threshold) {
   DIR *dir;
   struct dirent *entry;
 
@@ -262,9 +270,81 @@ int synchronize(const char *src_path, const char *dst_path, int recursion,
   return 0;
 }
 
+int // returns 0 on success, -1 on error
+create_deamon() {
+  // man 7 daemon
+
+  pid_t pid;
+
+  pid = fork();
+
+  if (pid < 0)
+    return -1;
+  if (pid > 0)
+    exit(EXIT_SUCCESS);
+
+  if (setsid() < 0)
+    return -1;
+
+  // Ignore SIGCHLD: Prevent zombie processes
+  signal(SIGCHLD, SIG_IGN);
+  // Ignore SIGHUP: Survive terminal closure
+  signal(SIGHUP, SIG_IGN);
+
+  pid = fork();
+
+  if (pid < 0)
+    return -1;
+  if (pid > 0)
+    exit(EXIT_SUCCESS);
+
+  /*
+  Linux daemons should not use the terminal for input or output. Every process
+  starts with three file descriptors: stdin (0), stdout (1), and stderr (2). For
+  interactive programs they point to the terminal, but for daemons this is
+  unsafe and unreliable. To avoid issues, a daemon must redirect these streams,
+  typically sending stdin to /dev/null and stdout and stderr to /dev/null or a
+  log file. This prevents accidental terminal access and enables proper logging
+  and error handling.
+  */
+  int fd_null = open("/dev/null", O_RDWR);
+  if (fd_null == -1) {
+    return -1;
+  }
+
+  // Redirect stdin, stdout, and stderr to /dev/null
+  dup2(fd_null, STDIN_FILENO);
+  dup2(fd_null, STDOUT_FILENO);
+  dup2(fd_null, STDERR_FILENO);
+
+  close(fd_null);
+
+  /*
+    The umask (a setting that globally alters file permissions of newly created
+    files) may have been adjusted by the calling process, causing directories
+    and files created by the daemon to have unpredictable file permissions.
+  */
+  umask(0);
+
+  /*
+     The daemon process also inherits the current working directory of the
+     caller process. It may happen that the current working directory refers to
+     an external drive or partition. As a result, it can no longer be cleanly
+     unmounted while the daemon is running.
+  */
+  if (chdir("/") == -1) {
+    return -1;
+  }
+  return 0;
+}
+
+void wake_up_handler(int signum) {
+  syslog(LOG_INFO, "Otrzymano sygnal SIGUSR1. wznawianie synchronizacji...");
+}
+
 int main(int argc, char *argv[]) {
-  const char *src_path = NULL;
-  const char *dst_path = NULL;
+  const char *raw_src_path = NULL;
+  const char *raw_dst_path = NULL;
 
   int recursion = 0;
   long long mmap_threshold = DEFAULT_SIZE_MMAP;
@@ -283,17 +363,17 @@ int main(int argc, char *argv[]) {
         printf("Wartosc dla -t jest nieprawidlowa lub <= 0\n");
         return 1;
       }
-    } else if (src_path == NULL) {
-      src_path = argv[i];
-    } else if (dst_path == NULL) {
-      dst_path = argv[i];
+    } else if (raw_src_path == NULL) {
+      raw_src_path = argv[i];
+    } else if (raw_dst_path == NULL) {
+      raw_dst_path = argv[i];
     } else {
       printf("Podano zbyt duzo argumentow\n");
       return 1;
     }
   }
 
-  if (src_path == NULL || dst_path == NULL) {
+  if (raw_src_path == NULL || raw_dst_path == NULL) {
     printf(
         "Wymagane sa dwa argumenty: <katalog zrodlowy> <katalog docelowy>\n");
     print_help(argv[0]);
@@ -302,44 +382,78 @@ int main(int argc, char *argv[]) {
 
   struct stat statbuf;
 
-  if (lstat(src_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
+  if (lstat(raw_src_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
     printf(
         "Blad: Sciezka zrodlowa '%s' nie istnieje lub nie jest katalogiem.\n",
-        src_path);
+        raw_src_path);
     return 1;
   }
 
-  if (lstat(dst_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
+  if (lstat(raw_dst_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
     printf(
         "Blad: Sciezka docelowa '%s' nie istnieje lub nie jest katalogiem.\n",
-        dst_path);
+        raw_dst_path);
     return 1;
   }
 
-  // 1. usuniecie nadmiaru z dst
-  // jesli byl argument -R uwzglednia rowniez katalogi
-  if (remove_file(src_path, dst_path, recursion) == -1) {
-    printf("Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'\n",
-           src_path);
+  // Bezwzgledne sciezki
+  char src_path[PATH_MAX];
+  char dst_path[PATH_MAX];
+  if (realpath(raw_src_path, src_path) == NULL ||
+      realpath(raw_dst_path, dst_path) == NULL) {
+    printf("Blad: Nie udalo sie znalezc sciezki bezwzglednej.\n");
     return 1;
   }
 
-  // 2. synchronizacja z src do dst
-  // jesli byl argument -R uwzglednia rowniez katalogi
-  if (synchronize(src_path, dst_path, recursion, mmap_threshold) == -1) {
-    printf("Nie udalo sie zsynchronizowac wszystkich plikow z katalogu "
-           "zrodlowego '%s' do "
-           "katalogu docelowego '%s'\n",
-           src_path, dst_path);
+  if (create_deamon() == -1) {
     return 1;
   }
 
+  openlog("demon_synch", LOG_PID | LOG_CONS, LOG_DAEMON);
+  syslog(LOG_INFO, "Demon uruchomiony poprawnie. Sciezki: %s -> %s", src_path,
+         dst_path);
+
+  if (signal(SIGUSR1, wake_up_handler) == SIG_ERR) {
+    syslog(LOG_ERR, "Blad rejestracji sygnalu SIGUSR1");
+    return 1;
+  }
+
+  while (1) {
+    syslog(LOG_INFO, "ROZPOCZECIE SYNCHRONIZACJI");
+
+    // 1. usuniecie nadmiaru z dst
+    // jesli byl argument -R uwzglednia rowniez katalogi
+    if (remove_file(src_path, dst_path, recursion) == -1) {
+      syslog(
+          LOG_ERR,
+          "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'\n",
+          src_path);
+      return 1;
+    }
+
+    // 2. synchronizacja z src do dst
+    // jesli byl argument -R uwzglednia rowniez katalogi
+    if (synchronize(src_path, dst_path, recursion, mmap_threshold) == -1) {
+      syslog(LOG_ERR,
+             "Nie udalo sie zsynchronizowac wszystkich plikow z katalogu "
+             "zrodlowego '%s' do katalogu docelowego '%s'\n",
+             src_path, dst_path);
+      return 1;
+    }
+
+    syslog(LOG_INFO, "ZAKONCZENIE SYNCHRONIZACJI");
+
+    // sleep(SLEEP_INTERVAL);
+    sleep(SLEEP_INTERVAL_TEST);
+  }
+
+  closelog();
   return 0;
 }
 
 void print_help(const char *name) {
   printf("Demon synchronizujący dwa podkatalogi\n");
-  printf("------------------------------\n");
+  printf("---------------------------------------\n");
   printf("Uzycie: %s [-h] [-R] [-t] <zrodlo> <cel>\n", name);
   printf("Parametry:\n");
   printf("  <zrodlo>    Katalog, z ktorego kopiujemy dane\n");

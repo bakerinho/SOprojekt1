@@ -14,13 +14,13 @@ int main(int argc, char *argv[]) {
     printf("Child, id: %d\n", getpid());
   } else {
     printf("Fork failed\n");
+    return 1;
   }
 
   printf("Both\n");
   while (1) {
     if (id > 0) {
       return 0;
-      sleep(1);
     } else {
       sleep(1);
     }
