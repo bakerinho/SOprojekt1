@@ -49,11 +49,13 @@ delete_recursive(const char *path) {
       delete_recursive(file_path);
     } else {
       unlink(file_path);
+      syslog(LOG_INFO, "Usunieto plik: %s", file_path);
     }
   }
   closedir(dir);
   // usuniecie folderu w ktorym usunieto wszystkie pliki
   rmdir(path);
+  syslog(LOG_INFO, "Usunieto katalog: %s", file_path);
   return 0;
 }
 
@@ -91,6 +93,8 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
     }
     if (S_ISREG(st_dst.st_mode)) {
       if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
+
+        syslog(LOG_INFO, "Usunieto plik: %s", file_path_dst);
         unlink(file_path_dst);
       }
     } else if (recursion && S_ISDIR(st_dst.st_mode)) {
@@ -100,6 +104,9 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
                  file_path_dst);
           continue;
         }
+      } else {
+        if (remove_file(file_path_src, file_path_dst, recursion) == -1)
+          continue;
       }
     }
   }
@@ -209,6 +216,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     syslog(LOG_ERR, "Nie udalo sie nadpisac czasu dla '%s'", dst_path);
     return -1;
   }
+  syslog(LOG_INFO, "skopiowano plik: %s", dst_path);
   return 0;
 }
 
@@ -258,6 +266,7 @@ synchronize(const char *src_path, const char *dst_path, int recursion,
     } else if (recursion && S_ISDIR(st_src.st_mode)) {
       if (lstat(file_path_dst, &st_dst) != 0 || !S_ISDIR(st_dst.st_mode)) {
         mkdir(file_path_dst, st_src.st_mode & 0777);
+        syslog(LOG_INFO, "Utworzono katalog: %s", file_path_dst);
       }
       if (synchronize(file_path_src, file_path_dst, recursion, threshold) ==
           -1) {
@@ -300,12 +309,12 @@ create_deamon() {
 
   /*
   Linux daemons should not use the terminal for input or output. Every process
-  starts with three file descriptors: stdin (0), stdout (1), and stderr (2). For
-  interactive programs they point to the terminal, but for daemons this is
-  unsafe and unreliable. To avoid issues, a daemon must redirect these streams,
-  typically sending stdin to /dev/null and stdout and stderr to /dev/null or a
-  log file. This prevents accidental terminal access and enables proper logging
-  and error handling.
+  starts with three file descriptors: stdin (0), stdout (1), and stderr (2).
+  For interactive programs they point to the terminal, but for daemons this is
+  unsafe and unreliable. To avoid issues, a daemon must redirect these
+  streams, typically sending stdin to /dev/null and stdout and stderr to
+  /dev/null or a log file. This prevents accidental terminal access and
+  enables proper logging and error handling.
   */
   int fd_null = open("/dev/null", O_RDWR);
   if (fd_null == -1) {
@@ -320,17 +329,18 @@ create_deamon() {
   close(fd_null);
 
   /*
-    The umask (a setting that globally alters file permissions of newly created
-    files) may have been adjusted by the calling process, causing directories
-    and files created by the daemon to have unpredictable file permissions.
+    The umask (a setting that globally alters file permissions of newly
+    created files) may have been adjusted by the calling process, causing
+    directories and files created by the daemon to have unpredictable file
+    permissions.
   */
   umask(0);
 
   /*
      The daemon process also inherits the current working directory of the
-     caller process. It may happen that the current working directory refers to
-     an external drive or partition. As a result, it can no longer be cleanly
-     unmounted while the daemon is running.
+     caller process. It may happen that the current working directory refers
+     to an external drive or partition. As a result, it can no longer be
+     cleanly unmounted while the daemon is running.
   */
   if (chdir("/") == -1) {
     return -1;
@@ -424,10 +434,9 @@ int main(int argc, char *argv[]) {
     // 1. usuniecie nadmiaru z dst
     // jesli byl argument -R uwzglednia rowniez katalogi
     if (remove_file(src_path, dst_path, recursion) == -1) {
-      syslog(
-          LOG_ERR,
-          "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'",
-          src_path);
+      syslog(LOG_ERR,
+             "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'",
+             src_path);
     }
 
     // 2. synchronizacja z src do dst
@@ -441,8 +450,8 @@ int main(int argc, char *argv[]) {
 
     syslog(LOG_INFO, "ZAKONCZENIE SYNCHRONIZACJI");
 
-    // sleep(SLEEP_INTERVAL);
-    sleep(SLEEP_INTERVAL_TEST);
+    sleep(SLEEP_INTERVAL);
+    // sleep(SLEEP_INTERVAL_TEST);
   }
 
   closelog();
