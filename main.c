@@ -12,11 +12,12 @@
 #include <unistd.h>
 
 #define MAX_PATH_LENGTH 1024
-#define BUFF_SIZE_OPEN 8192                 // 8KB bo tak
-#define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo na jakims tescie widzialem
+#define BUFF_SIZE_OPEN                                                         \
+  8192 // 8KB ustalone z testow kopiowania z poprzednich zadan
+#define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo widzialem na jakims tescie
 
 #define SLEEP_INTERVAL (5 * 60) // 5 min
-#define SLEEP_INTERVAL_TEST 5   // 5 sek
+#define SLEEP_INTERVAL_TEST 5   // 5 sek (do testowania)
 
 void print_help(const char *name);
 
@@ -136,6 +137,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     return -1;
   }
 
+  // Jesli jest <= od threshold, kopiuj za pomocą read/write
   if (statbuf.st_size >= 0 && statbuf.st_size <= threshold) {
 
     size_t buffSize = BUFF_SIZE_OPEN; // 8KB
@@ -167,7 +169,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
     free(buff);
     // printf("Uzyto open/write\n");
-  } else {
+  } else { // else, za pomocą mmap
     void *src_mmap, *dst_mmap;
     src_mmap =
         mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
@@ -280,71 +282,65 @@ synchronize(const char *src_path, const char *dst_path, int recursion,
 }
 
 int // returns 0 on success, -1 on error
-create_deamon() {
-  // man 7 daemon
-
+create_daemon() {
   pid_t pid;
 
+  // Pierwszy fork odłącza program od terminala
+  // pozwalając mu działać w tle samemu.
   pid = fork();
-
   if (pid < 0)
     return -1;
   if (pid > 0)
     exit(EXIT_SUCCESS);
 
+  // Utworzenie nowej sesji. Proces staje się liderem nowej sesji i grupy
+  // procesów, całkowicie odcinając się od terminala, z którego został
+  // uruchomiony.
   if (setsid() < 0)
     return -1;
 
-  // Ignore SIGCHLD: Prevent zombie processes
+  // 3. Ignorowanie sygnałów kontrolnych z systemu.
+  // SIGCHLD - ochrona przed powstawaniem procesów 'zombie'.
+  // SIGHUP - gwarancja że zamknięcie okna terminala nie zabije procesu.
   signal(SIGCHLD, SIG_IGN);
-  // Ignore SIGHUP: Survive terminal closure
   signal(SIGHUP, SIG_IGN);
 
+  // 4. Drugi fork odbiera procesowi status lidera sesji.
+  // Daje to gwarancję, że proces już nigdy przypadkowo nie podepnie
+  // się pod żaden nowy terminal
   pid = fork();
-
   if (pid < 0)
     return -1;
   if (pid > 0)
     exit(EXIT_SUCCESS);
 
-  /*
-  Linux daemons should not use the terminal for input or output. Every process
-  starts with three file descriptors: stdin (0), stdout (1), and stderr (2).
-  For interactive programs they point to the terminal, but for daemons this is
-  unsafe and unreliable. To avoid issues, a daemon must redirect these
-  streams, typically sending stdin to /dev/null and stdout and stderr to
-  /dev/null or a log file. This prevents accidental terminal access and
-  enables proper logging and error handling.
-  */
+  // 5. Demony nie korzystają z ekranu ani klawiatury.
+  // Przekierowanie standardowych strumieni (stdin, stdout, stderr) do /dev/null
+  // zapobiega błędom IO, gdyby jakakolwiek funkcja próbowała coś wypisać na
+  // ekran.
   int fd_null = open("/dev/null", O_RDWR);
   if (fd_null == -1) {
     return -1;
   }
 
-  // Redirect stdin, stdout, and stderr to /dev/null
   dup2(fd_null, STDIN_FILENO);
   dup2(fd_null, STDOUT_FILENO);
   dup2(fd_null, STDERR_FILENO);
-
   close(fd_null);
 
-  /*
-    The umask (a setting that globally alters file permissions of newly
-    created files) may have been adjusted by the calling process, causing
-    directories and files created by the daemon to have unpredictable file
-    permissions.
-  */
+  // 6. Zerowanie maski uprawnień (umask).
+  // Gwarantuje to, że pliki tworzone przez demona będą miały dokładnie takie
+  // uprawnienia, o jakie poprosi w kodzie, bez dziedziczenia ograniczeń po
+  // systemie użytkownika.
   umask(0);
 
-  /*
-     The daemon process also inherits the current working directory of the
-     caller process. It may happen that the current working directory refers
-     to an external drive or partition. As a result, it can no longer be
-     cleanly unmounted while the daemon is running.
-  */
+  // 7. Zmiana katalogu roboczego na główny ('/').
+  // Zapobiega to sytuacji, w której demon zablokowałby możliwość odmontowania
+  // dysku/katalogu, z którego został uruchomiony.
   if (chdir("/") == -1) {
     return -1;
   }
+
   return 0;
 }
 
@@ -415,7 +411,34 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (create_deamon() == -1) {
+  // Sprawdzenie czy to nie te same miejsce
+  if (strcmp(src_path, dst_path) == 0) {
+    printf("Blad: Katalog zrodlowy i docelowy to to samo miejsce!\n");
+    return 1;
+  }
+
+  size_t src_len = strlen(src_path);
+  size_t dst_len = strlen(dst_path);
+
+  // Sprawdzenie czy DST jest w SRC (np. src: /dir | dst: /dir/dst)
+  // Ochrona przed nieskonczona rekurencja
+  if ((strncmp(src_path, dst_path, src_len) == 0) && dst_path[src_len] == '/') {
+    printf("Blad: Katalog docelowy '%s' nie moze sie znajdowac w katalogu "
+           "zrodlowym '%s'\n",
+           dst_path, src_path);
+    return 1;
+  }
+
+  // Sprawdzenie czy SRC jest w DST (np. src: /dir/dir2 | dst: /dir)
+  // Ochrona przed usunieciem z SRC (tutaj dir2)
+  if ((strncmp(dst_path, src_path, dst_len) == 0) && src_path[dst_len] == '/') {
+    printf("Blad: Katalog zrodlowy '%s' nie moze sie znajdowac w katalogu "
+           "docelowym'%s'\n",
+           src_path, dst_path);
+    return 1;
+  }
+
+  if (create_daemon() == -1) {
     return 1;
   }
 
@@ -423,6 +446,7 @@ int main(int argc, char *argv[]) {
   syslog(LOG_INFO, "Demon uruchomiony poprawnie. Sciezki: %s -> %s", src_path,
          dst_path);
 
+  // wyslanie sygnalu SIGUSR1
   if (signal(SIGUSR1, wake_up_handler) == SIG_ERR) {
     syslog(LOG_ERR, "Blad rejestracji sygnalu SIGUSR1");
     return 1;
