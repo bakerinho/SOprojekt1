@@ -116,6 +116,66 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
 }
 
 int // returns 0 on success, -1 on error
+copy_read_write(int fSrc, int fDst) {
+  size_t buffSize = BUFF_SIZE_OPEN; // 8KB
+  char *buff = malloc(buffSize);
+
+  if (!buff) {
+    syslog(LOG_ERR, "Blad z alokacja pamieci bufora");
+    return -1;
+  }
+
+  ssize_t bytes;
+  while ((bytes = read(fSrc, buff, buffSize)) > 0) {
+    if (bytes != write(fDst, buff, (size_t)bytes)) {
+      free(buff);
+      return -1; // Blad zapisu
+    }
+  }
+
+  free(buff);
+
+  if (bytes == -1) {
+    return -1; // Blad odczytu
+  }
+
+  // syslog(LOG_INFO, "Uzyto open/write");
+  return 0;
+}
+
+int // returns 0 on success, -1 on error
+copy_mmap(int fSrc, int fDst, size_t file_size) {
+  // Trzeba poszerzyc plik docelowy, inaczej mmap rzuci bledem
+  if (ftruncate(fDst, (off_t)file_size) == -1) {
+    syslog(LOG_ERR, "Nie udalo sie poszerzyc pliku celu do zmapowania");
+    return -1;
+  }
+
+  void *src_mmap = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
+  if (src_mmap == MAP_FAILED) {
+    syslog(LOG_ERR, "Nie udalo sie zmapowac zrodla");
+    return -1;
+  }
+
+  void *dst_mmap =
+      mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fDst, 0);
+  if (dst_mmap == MAP_FAILED) {
+    syslog(LOG_ERR, "Nie udalo sie zmapowac celu");
+    munmap(src_mmap, file_size);
+    return -1;
+  }
+
+  // Wlasciwe kopiowanie w pamieci RAM
+  memcpy(dst_mmap, src_mmap, file_size);
+
+  munmap(src_mmap, file_size);
+  munmap(dst_mmap, file_size);
+
+  // syslog(LOG_INFO, "Uzyto mmap");
+  return 0;
+}
+
+int // returns 0 on success, -1 on error
 copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
   int fSrc = open(src_path, O_RDONLY);
@@ -137,79 +197,24 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     return -1;
   }
 
-  // Jesli jest <= od threshold, kopiuj za pomocą read/write
+  int copy_status = 0;
+
+  // Decyzja, w jaki sposób będzie kopiowane
   if (statbuf.st_size >= 0 && statbuf.st_size <= threshold) {
-
-    size_t buffSize = BUFF_SIZE_OPEN; // 8KB
-    char *buff = malloc(buffSize);
-
-    if (!buff) {
-      syslog(LOG_ERR, "Blad z alokacja pamieci");
-      close(fSrc);
-      close(fDst);
-      return -1;
-    }
-
-    ssize_t bytes;
-    while ((bytes = read(fSrc, buff, buffSize)) > 0) {
-
-      if (bytes != write(fDst, buff, (size_t)bytes)) {
-        close(fSrc);
-        close(fDst);
-        free(buff);
-        return -1;
-      }
-    }
-    if (bytes == -1) {
-      close(fSrc);
-      close(fDst);
-      free(buff);
-      return -1;
-    }
-
-    free(buff);
-    // printf("Uzyto open/write\n");
-  } else { // else, za pomocą mmap
-    void *src_mmap, *dst_mmap;
-    src_mmap =
-        mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
-
-    if (src_mmap == MAP_FAILED) {
-      syslog(LOG_ERR, "Nie udalo sie zmapowac zrodla");
-      close(fSrc);
-      close(fDst);
-      return -1;
-    }
-
-    if (ftruncate(fDst, statbuf.st_size) == -1) {
-      syslog(LOG_ERR, "Nie udalo sie poszerzyc pliku celu do zmapowania");
-      close(fSrc);
-      close(fDst);
-      munmap(src_mmap, (size_t)statbuf.st_size);
-      return -1;
-    }
-
-    dst_mmap = mmap(NULL, (size_t)statbuf.st_size, PROT_READ | PROT_WRITE,
-                    MAP_SHARED, fDst, 0);
-
-    if (dst_mmap == MAP_FAILED) {
-      syslog(LOG_ERR, "Nie udalo sie zmapowac celu");
-      munmap(src_mmap, (size_t)statbuf.st_size);
-      close(fSrc);
-      close(fDst);
-      return -1;
-    }
-
-    memcpy(dst_mmap, src_mmap, (size_t)statbuf.st_size);
-
-    munmap(src_mmap, (size_t)statbuf.st_size);
-    munmap(dst_mmap, (size_t)statbuf.st_size);
-    // printf("Uzyto mmap\n");
+    copy_status = copy_read_write(fSrc, fDst);
+  } else {
+    copy_status = copy_mmap(fSrc, fDst, (size_t)statbuf.st_size);
   }
 
   close(fSrc);
   close(fDst);
-  // zmiana czasu modyfikacji
+
+  // Późniejsze wyjście z funkcji, żeby pozamykać pliki
+  if (copy_status == -1) {
+    return -1;
+  }
+
+  // Zmiana czasu modyfikacji
   struct timespec times[2];
   times[0] = statbuf.st_atim; // Czas dostepu
   times[1] = statbuf.st_mtim; // Czas modyfikacji
@@ -218,6 +223,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     syslog(LOG_ERR, "Nie udalo sie nadpisac czasu dla '%s'", dst_path);
     return -1;
   }
+
   syslog(LOG_INFO, "skopiowano plik: %s", dst_path);
   return 0;
 }
