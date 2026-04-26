@@ -11,13 +11,19 @@
 #include <syslog.h>
 #include <unistd.h>
 
-#define MAX_PATH_LENGTH 1024
-#define BUFF_SIZE_OPEN                                                         \
-  8192 // 8KB ustalone z testow kopiowania z poprzednich zadan
-#define DEFAULT_SIZE_MMAP (8 * 1024 * 1024) // 8MB bo widzialem na jakims tescie
+#define MAX_PATH_LENGTH 4096
+#define BUFF_SIZE_OPEN 8192
+#define DEFAULT_SIZE_MMAP (8 * 1024 * 1024)
 
 #define SLEEP_INTERVAL (5 * 60) // 5 min
-#define SLEEP_INTERVAL_TEST 5   // 5 sek (do testowania)
+
+typedef struct {
+  char src_path[MAX_PATH_LENGTH];
+  char dst_path[MAX_PATH_LENGTH];
+  int recursion;
+  long long mmap_threshold;
+  int sleep_interval;
+} Config;
 
 void print_help(const char *name);
 
@@ -145,33 +151,20 @@ copy_read_write(int fSrc, int fDst) {
 
 int // returns 0 on success, -1 on error
 copy_mmap(int fSrc, int fDst, size_t file_size) {
-  // Trzeba poszerzyc plik docelowy, inaczej mmap rzuci bledem
-  if (ftruncate(fDst, (off_t)file_size) == -1) {
-    syslog(LOG_ERR, "Nie udalo sie poszerzyc pliku celu do zmapowania");
-    return -1;
-  }
-
   void *src_mmap = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fSrc, 0);
   if (src_mmap == MAP_FAILED) {
     syslog(LOG_ERR, "Nie udalo sie zmapowac zrodla");
     return -1;
   }
 
-  void *dst_mmap =
-      mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fDst, 0);
-  if (dst_mmap == MAP_FAILED) {
-    syslog(LOG_ERR, "Nie udalo sie zmapowac celu");
-    munmap(src_mmap, file_size);
+  ssize_t written = write(fDst, src_mmap, file_size);
+  munmap(src_mmap, file_size);
+
+  if (written == -1 || (size_t)written != file_size) {
+    syslog(LOG_ERR, "Blad zapisu zmapowanego pliku");
     return -1;
   }
 
-  // Wlasciwe kopiowanie w pamieci RAM
-  memcpy(dst_mmap, src_mmap, file_size);
-
-  munmap(src_mmap, file_size);
-  munmap(dst_mmap, file_size);
-
-  // syslog(LOG_INFO, "Uzyto mmap");
   return 0;
 }
 
@@ -354,34 +347,41 @@ void wake_up_handler(int signum) {
   syslog(LOG_INFO, "Otrzymano sygnal SIGUSR1. wznawianie synchronizacji...");
 }
 
-int main(int argc, char *argv[]) {
+int init_config(int argc, char *argv[], Config *config) {
   const char *raw_src_path = NULL;
   const char *raw_dst_path = NULL;
 
-  int recursion = 0;
-  long long mmap_threshold = DEFAULT_SIZE_MMAP;
+  config->recursion = 0;
+  config->mmap_threshold = DEFAULT_SIZE_MMAP;
+  config->sleep_interval = SLEEP_INTERVAL;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0) {
       print_help(argv[0]);
-      return 0;
+      exit(0); // Od razu wychodzimy z programu
     } else if (strcmp(argv[i], "-R") == 0) {
-      recursion = 1;
+      config->recursion = 1;
     } else if (strcmp(argv[i], "-t") == 0) {
-      if (i + 1 < argc) {
-        mmap_threshold = atoll(argv[++i]);
+      if (i + 1 < argc)
+        config->mmap_threshold = atoll(argv[++i]);
+      if (config->mmap_threshold <= 0) {
+        printf("Blad: Wartosc dla -t jest nieprawidlowa lub <= 0\n");
+        return -1;
       }
-      if (mmap_threshold == 0 || mmap_threshold < 0) {
-        printf("Wartosc dla -t jest nieprawidlowa lub <= 0\n");
-        return 1;
+    } else if (strcmp(argv[i], "-s") == 0) {
+      if (i + 1 < argc)
+        config->sleep_interval = atoi(argv[++i]);
+      if (config->sleep_interval <= 0) {
+        printf("Blad: Wartosc dla -s jest nieprawidlowa lub <= 0\n");
+        return -1;
       }
     } else if (raw_src_path == NULL) {
       raw_src_path = argv[i];
     } else if (raw_dst_path == NULL) {
       raw_dst_path = argv[i];
     } else {
-      printf("Podano zbyt duzo argumentow\n");
-      return 1;
+      printf("Blad: Podano zbyt duzo argumentow\n");
+      return -1;
     }
   }
 
@@ -389,58 +389,56 @@ int main(int argc, char *argv[]) {
     printf(
         "Wymagane sa dwa argumenty: <katalog zrodlowy> <katalog docelowy>\n");
     print_help(argv[0]);
-    return 1;
+    return -1;
   }
 
   struct stat statbuf;
-
   if (lstat(raw_src_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
     printf(
         "Blad: Sciezka zrodlowa '%s' nie istnieje lub nie jest katalogiem.\n",
         raw_src_path);
-    return 1;
+    return -1;
   }
-
   if (lstat(raw_dst_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode)) {
     printf(
         "Blad: Sciezka docelowa '%s' nie istnieje lub nie jest katalogiem.\n",
         raw_dst_path);
-    return 1;
+    return -1;
   }
 
-  // Bezwzgledne sciezki
-  char src_path[PATH_MAX];
-  char dst_path[PATH_MAX];
-  if (realpath(raw_src_path, src_path) == NULL ||
-      realpath(raw_dst_path, dst_path) == NULL) {
+  if (realpath(raw_src_path, config->src_path) == NULL ||
+      realpath(raw_dst_path, config->dst_path) == NULL) {
     printf("Blad: Nie udalo sie znalezc sciezki bezwzglednej.\n");
-    return 1;
+    return -1;
   }
 
-  // Sprawdzenie czy to nie te same miejsce
-  if (strcmp(src_path, dst_path) == 0) {
+  size_t src_len = strlen(config->src_path);
+  size_t dst_len = strlen(config->dst_path);
+
+  if (strcmp(config->src_path, config->dst_path) == 0) {
     printf("Blad: Katalog zrodlowy i docelowy to to samo miejsce!\n");
-    return 1;
+    return -1;
+  }
+  if ((strncmp(config->src_path, config->dst_path, src_len) == 0) &&
+      config->dst_path[src_len] == '/') {
+    printf(
+        "Blad: Katalog docelowy nie moze sie znajdowac wewnatrz zrodlowego\n");
+    return -1;
+  }
+  if ((strncmp(config->dst_path, config->src_path, dst_len) == 0) &&
+      config->src_path[dst_len] == '/') {
+    printf(
+        "Blad: Katalog zrodlowy nie moze sie znajdowac wewnatrz docelowego\n");
+    return -1;
   }
 
-  size_t src_len = strlen(src_path);
-  size_t dst_len = strlen(dst_path);
+  return 0;
+}
 
-  // Sprawdzenie czy DST jest w SRC (np. src: /dir | dst: /dir/dst)
-  // Ochrona przed nieskonczona rekurencja
-  if ((strncmp(src_path, dst_path, src_len) == 0) && dst_path[src_len] == '/') {
-    printf("Blad: Katalog docelowy '%s' nie moze sie znajdowac w katalogu "
-           "zrodlowym '%s'\n",
-           dst_path, src_path);
-    return 1;
-  }
+int main(int argc, char *argv[]) {
+  Config config;
 
-  // Sprawdzenie czy SRC jest w DST (np. src: /dir/dir2 | dst: /dir)
-  // Ochrona przed usunieciem z SRC (tutaj dir2)
-  if ((strncmp(dst_path, src_path, dst_len) == 0) && src_path[dst_len] == '/') {
-    printf("Blad: Katalog zrodlowy '%s' nie moze sie znajdowac w katalogu "
-           "docelowym'%s'\n",
-           src_path, dst_path);
+  if (init_config(argc, argv, &config) == -1) {
     return 1;
   }
 
@@ -449,39 +447,33 @@ int main(int argc, char *argv[]) {
   }
 
   openlog("demon_synch", LOG_PID | LOG_CONS, LOG_DAEMON);
-  syslog(LOG_INFO, "Demon uruchomiony poprawnie. Sciezki: %s -> %s", src_path,
-         dst_path);
+  syslog(LOG_INFO, "Demon uruchomiony poprawnie. Sciezki: %s -> %s",
+         config.src_path, config.dst_path);
 
-  // wyslanie sygnalu SIGUSR1
   if (signal(SIGUSR1, wake_up_handler) == SIG_ERR) {
     syslog(LOG_ERR, "Blad rejestracji sygnalu SIGUSR1");
+    closelog();
     return 1;
   }
 
   while (1) {
     syslog(LOG_INFO, "ROZPOCZECIE SYNCHRONIZACJI");
 
-    // 1. usuniecie nadmiaru z dst
-    // jesli byl argument -R uwzglednia rowniez katalogi
-    if (remove_file(src_path, dst_path, recursion) == -1) {
-      syslog(LOG_ERR,
-             "Nie udalo sie usunac nadmiaru plikow z katalogu docelowego '%s'",
-             src_path);
+    if (remove_file(config.src_path, config.dst_path, config.recursion) == -1) {
+      syslog(LOG_ERR, "Nie udalo sie usunac nadmiaru plikow z '%s'",
+             config.dst_path);
     }
 
-    // 2. synchronizacja z src do dst
-    // jesli byl argument -R uwzglednia rowniez katalogi
-    if (synchronize(src_path, dst_path, recursion, mmap_threshold) == -1) {
-      syslog(LOG_ERR,
-             "Nie udalo sie zsynchronizowac wszystkich plikow z katalogu "
-             "zrodlowego '%s' do katalogu docelowego '%s'",
-             src_path, dst_path);
+    if (synchronize(config.src_path, config.dst_path, config.recursion,
+                    config.mmap_threshold) == -1) {
+      syslog(LOG_ERR, "Blad synchronizacji z '%s' do '%s'", config.src_path,
+             config.dst_path);
     }
 
-    syslog(LOG_INFO, "ZAKONCZENIE SYNCHRONIZACJI");
-
-    sleep(SLEEP_INTERVAL);
-    // sleep(SLEEP_INTERVAL_TEST);
+    syslog(LOG_INFO,
+           "ZAKONCZENIE SYNCHRONIZACJI. Demon idzie spac na %d sekund.",
+           config.sleep_interval);
+    sleep((unsigned int)config.sleep_interval);
   }
 
   closelog();
@@ -491,15 +483,20 @@ int main(int argc, char *argv[]) {
 void print_help(const char *name) {
   printf("Demon synchronizujący dwa podkatalogi\n");
   printf("---------------------------------------\n");
-  printf("Uzycie: %s [-h] [-R] [-t] <zrodlo> <cel>\n", name);
+  printf("Uzycie: %s [-h] [-R] [-t <bajty>] [-s <sekundy>] <zrodlo> <cel>\n",
+         name);
   printf("Parametry:\n");
-  printf("  <zrodlo>    Katalog, z ktorego kopiujemy dane\n");
-  printf("  <cel>       Katalog, ktory uaktualniamy i sprzatamy\n");
+  printf("  <zrodlo>        Katalog, z ktorego kopiujemy dane\n");
+  printf("  <cel>           Katalog, ktory uaktualniamy i sprzatamy\n");
   printf("Opcje:\n");
-  printf("  -R          Synchronizacja rekurencyjna (wchodzi w podkatalogi)\n");
-  printf("  -t <bajty>  Prog wielkosci pliku w bajtach, powyzej ktorego "
+  printf("  -R              Synchronizacja rekurencyjna (wchodzi w "
+         "podkatalogi)\n");
+  printf("  -t <bajty>      Prog wielkosci pliku w bajtach, powyzej ktorego "
          "demon\n");
-  printf("              uzyje mmap zamiast read/write.\n");
-  printf("              (Domyslna wartosc: 8388608 B = 8 MB)\n");
-  printf("  -h          Wyswietla pomoc\n");
+  printf("                  uzyje mmap zamiast read/write.\n");
+  printf("                  (Domyslna wartosc: 8388608 B = 8 MB)\n");
+  printf("  -s <sekundy>    Czas usypiania demona miedzy cyklami "
+         "synchronizacji.\n");
+  printf("                  (Domyslna wartosc: 300 s = 5 minut)\n");
+  printf("  -h              Wyswietla pomoc\n");
 }
