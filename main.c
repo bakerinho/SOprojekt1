@@ -101,8 +101,8 @@ remove_file(const char *src_path, const char *dst_path, int recursion) {
     if (S_ISREG(st_dst.st_mode)) {
       if (lstat(file_path_src, &st_src) != 0 || !S_ISREG(st_src.st_mode)) {
 
-        syslog(LOG_INFO, "Usunieto plik: %s", file_path_dst);
         unlink(file_path_dst);
+        syslog(LOG_INFO, "Usunieto plik: %s", file_path_dst);
       }
     } else if (recursion && S_ISDIR(st_dst.st_mode)) {
       if (lstat(file_path_src, &st_src) != 0 || !S_ISDIR(st_src.st_mode)) {
@@ -142,7 +142,7 @@ copy_read_write(int fSrc, int fDst) {
   free(buff);
 
   if (bytes == -1) {
-    return -1; // Blad odczytu
+    return -1;
   }
 
   // syslog(LOG_INFO, "Uzyto open/write");
@@ -217,7 +217,7 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
     return -1;
   }
 
-  syslog(LOG_INFO, "skopiowano plik: %s", dst_path);
+  syslog(LOG_INFO, "Skopiowano plik: %s", dst_path);
   return 0;
 }
 
