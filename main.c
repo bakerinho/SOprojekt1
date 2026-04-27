@@ -350,7 +350,7 @@ int init_config(int argc, char *argv[], Config *config) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0) {
       print_help(argv[0]);
-      exit(0); // Od razu wychodzimy z programu
+      exit(0);
     } else if (strcmp(argv[i], "-R") == 0) {
       config->recursion = 1;
     } else if (strcmp(argv[i], "-t") == 0) {
@@ -488,7 +488,7 @@ void print_help(const char *name) {
   printf("                  uzyje mmap zamiast read/write.\n");
   printf("                  (Domyslna wartosc: 8388608 B = 8 MB)\n");
   printf("  -s <sekundy>    Czas usypiania demona miedzy cyklami "
-         "synchronizacji.\n");
-  printf("                  (Domyslna wartosc: 300 s = 5 minut)\n");
+         "synchronizacji\n");
+  printf("                  (Domyslna wartosc: 300 s = 5 min)\n");
   printf("  -h              Wyswietla pomoc\n");
 }
