@@ -145,7 +145,6 @@ copy_read_write(int fSrc, int fDst) {
     return -1;
   }
 
-  // syslog(LOG_INFO, "Uzyto open/write");
   return 0;
 }
 
@@ -192,7 +191,6 @@ copy_file(const char *src_path, const char *dst_path, long long threshold) {
 
   int copy_status = 0;
 
-  // Decyzja, w jaki sposób będzie kopiowane
   if (statbuf.st_size >= 0 && statbuf.st_size <= threshold) {
     copy_status = copy_read_write(fSrc, fDst);
   } else {
@@ -285,7 +283,7 @@ create_daemon() {
   pid_t pid;
 
   // Pierwszy fork odłącza program od terminala
-  // pozwalając mu działać w tle samemu.
+  // pozwalając mu działać w tle samemu
   pid = fork();
   if (pid < 0)
     return -1;
@@ -298,14 +296,12 @@ create_daemon() {
   if (setsid() < 0)
     return -1;
 
-  // 3. Ignorowanie sygnałów kontrolnych z systemu.
   // SIGCHLD - ochrona przed powstawaniem procesów 'zombie'.
   // SIGHUP - gwarancja że zamknięcie okna terminala nie zabije procesu.
   signal(SIGCHLD, SIG_IGN);
   signal(SIGHUP, SIG_IGN);
 
-  // 4. Drugi fork odbiera procesowi status lidera sesji.
-  // Daje to gwarancję, że proces już nigdy przypadkowo nie podepnie
+  // Daje to gwarancję że proces już nigdy przypadkowo nie podepnie
   // się pod żaden nowy terminal
   pid = fork();
   if (pid < 0)
@@ -313,7 +309,6 @@ create_daemon() {
   if (pid > 0)
     exit(EXIT_SUCCESS);
 
-  // 5. Demony nie korzystają z ekranu ani klawiatury.
   // Przekierowanie standardowych strumieni (stdin, stdout, stderr) do /dev/null
   // zapobiega błędom IO, gdyby jakakolwiek funkcja próbowała coś wypisać na
   // ekran.
@@ -327,13 +322,10 @@ create_daemon() {
   dup2(fd_null, STDERR_FILENO);
   close(fd_null);
 
-  // 6. Zerowanie maski uprawnień (umask).
-  // Gwarantuje to, że pliki tworzone przez demona będą miały dokładnie takie
-  // uprawnienia, o jakie poprosi w kodzie, bez dziedziczenia ograniczeń po
-  // systemie użytkownika.
+  // Gwarantuje to że pliki tworzone przez demona będą miały dokładnie takie
+  // uprawnienia, bez dziedziczenia ograniczeń po systemie użytkownika.
   umask(0);
 
-  // 7. Zmiana katalogu roboczego na główny ('/').
   // Zapobiega to sytuacji, w której demon zablokowałby możliwość odmontowania
   // dysku/katalogu, z którego został uruchomiony.
   if (chdir("/") == -1) {
