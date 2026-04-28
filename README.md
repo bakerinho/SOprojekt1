@@ -10,5 +10,8 @@
 # SEND SIGNAL
 `kill -SIGUSR1 PID`
 
+# CHECK LOGS
+`sudo journalctl -t demon_synch`
+
 # HELP
 `./main -h`
